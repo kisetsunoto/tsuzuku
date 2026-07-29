@@ -213,7 +213,12 @@ export default function StreakApp() {
 
   useEffect(() => {
     const el = scroller.current;
-    if (el && ready) el.scrollLeft = (history - VISIBLE) * colW;
+    if (!el || !ready) return;
+    /* 実寸から逆算する。列幅の端数が積み上がっても今日が右端に揃う */
+    const id = requestAnimationFrame(() => {
+      el.scrollLeft = Math.max(0, el.scrollWidth - el.clientWidth - 3 * STAT_W);
+    });
+    return () => cancelAnimationFrame(id);
   }, [colW, ready, history, active.length]);
 
   const commit = useCallback((next) => {
