@@ -34,6 +34,23 @@ const shift = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); ret
 const gap = (a, b) => Math.round((parse(a) - parse(b)) / 86400000);
 const INTERVAL_LABEL = (n) => (n === 1 ? "毎日" : n === 7 ? "週1回" : `${n}日に1回`);
 
+/* 一時休止期間は習慣データとは別に保存し、表示・集計時だけ half として重ねる */
+const inPause = (day, pauses) => pauses.some((p) => p.start <= day && day <= p.end);
+function withPauses(days, pauses) {
+  if (!pauses.length) return days;
+  const next = { ...(days || {}) };
+  const today = key(new Date());
+  pauses.forEach(({ start, end }) => {
+    if (!start || !end || start > end || start > today) return;
+    const last = end < today ? end : today;
+    for (let d = parse(start); key(d) <= last; d = shift(d, 1)) {
+      const k = key(d);
+      next[k] = { ...next[k], state: "half" };
+    }
+  });
+  return next;
+}
+
 /* ---------- streak ---------- */
 const split = (days) => {
   const fulls = [], halves = [];
@@ -168,6 +185,7 @@ function useDateTick() {
 /* ---------- app ---------- */
 export default function StreakApp() {
   const [habits, setHabits] = useState([]);
+  const [pauses, setPauses] = useState([]);
   const [ready, setReady] = useState(false);
   const [sheet, setSheet] = useState(null);
   const [colW, setColW] = useState(56);
@@ -182,8 +200,15 @@ export default function StreakApp() {
   useEffect(() => {
     (async () => {
       try {
-        const r = await storage.get("streaks:habits");
-        if (r?.value) setHabits(JSON.parse(r.value).map(migrate));
+        const [habitData, pauseData] = await Promise.all([
+          storage.get("streaks:habits"),
+          storage.get("streaks:pauses"),
+        ]);
+        if (habitData?.value) setHabits(JSON.parse(habitData.value).map(migrate));
+        if (pauseData?.value) {
+          const saved = JSON.parse(pauseData.value);
+          if (Array.isArray(saved)) setPauses(saved.filter((p) => p?.id && p?.start && p?.end));
+        }
       } catch (e) { /* 初回 */ }
       setReady(true);
     })();
@@ -226,6 +251,11 @@ export default function StreakApp() {
     storage.set("streaks:habits", JSON.stringify(next)).catch(() => {});
   }, []);
 
+  const commitPauses = useCallback((next) => {
+    setPauses(next);
+    storage.set("streaks:pauses", JSON.stringify(next)).catch(() => {});
+  }, []);
+
   const patchDay = (id, day, fn) =>
     commit(habits.map((h) => {
       if (h.id !== id) return h;
@@ -264,18 +294,6 @@ export default function StreakApp() {
     press.current.long = false;
   };
 
-  const due = active.filter((h) => {
-    const st = stats(h.days, h.interval, today);
-    return st.alive && !st.doneToday && st.daysLeft === 0;
-  });
-  const tally = active.reduce((a, h) => {
-    const st = stats(h.days, h.interval, today);
-    if (st.doneToday) a.done++;
-    else if (st.restDay) a.rest++;
-    else a.todo++;
-    return a;
-  }, { done: 0, rest: 0, todo: 0 });
-
   if (!ready)
     return <div className="min-h-screen bg-white flex items-center justify-center text-neutral-400 text-sm">読み込み中</div>;
 
@@ -312,11 +330,17 @@ export default function StreakApp() {
                 </div>
                 {days.map((d) => {
                   const k = key(d);
+                  const weekend = d.getDay() === 6 ? "text-blue-600" : d.getDay() === 0 ? "text-red-600" : "text-neutral-400";
+                  const dateColor = d.getDay() === 6 ? "text-blue-600" : d.getDay() === 0 ? "text-red-600" : "text-neutral-700";
                   return (
                     <div key={k} style={{ width: colW, minWidth: colW }} className="text-center">
-                      <div className="text-[10px] tracking-wider text-neutral-400">{WD[d.getDay()]}</div>
+                      <div className={`text-[10px] tracking-wider ${weekend}`}>{WD[d.getDay()]}</div>
                       <div className={"mx-auto mt-1 w-7 h-7 flex items-center justify-center rounded-full text-[15px] tabular-nums " +
-                        (k === today ? "bg-green-600 text-white font-medium" : "text-neutral-700")}>{d.getDate()}</div>
+                        (k === today
+                          ? d.getDay() === 6 ? "bg-blue-50 text-blue-600 font-medium ring-1 ring-blue-200"
+                            : d.getDay() === 0 ? "bg-red-50 text-red-600 font-medium ring-1 ring-red-200"
+                              : "bg-green-600 text-white font-medium"
+                          : dateColor)}>{d.getDate()}</div>
                     </div>
                   );
                 })}
@@ -328,13 +352,14 @@ export default function StreakApp() {
               </div>
 
               {active.map((h) => {
-                const { fulls, halves } = split(h.days);
-                const st = stats(h.days, h.interval, today);
+                const effectiveDays = withPauses(h.days, pauses);
+                const { fulls, halves } = split(effectiveDays);
+                const st = stats(effectiveDays, h.interval, today);
                 const shades = PALETTE[h.color] || PALETTE.green;
                 const tones = chainTones(fulls, halves, h.interval);
                 const cells = days.map((d) => {
                   const k = key(d);
-                  return { ...cellState(h.days, fulls, halves, h.interval, k, today), k };
+                  return { ...cellState(effectiveDays, fulls, halves, h.interval, k, today), k, paused: inPause(k, pauses) };
                 });
                 /* 実施日で濃くなり、お休み・延命はその濃さを引き継ぐ */
                 let carry = null;
@@ -402,13 +427,13 @@ export default function StreakApp() {
                           const c = cells[i];
                           return (
                             <button key={k}
-                              onPointerDown={(e) => !c.future && down(e, h.id, k)}
+                              onPointerDown={(e) => !c.future && !c.paused && down(e, h.id, k)}
                               onPointerMove={move}
-                              onPointerUp={() => !c.future && up(h.id, k)}
+                              onPointerUp={() => !c.future && !c.paused && up(h.id, k)}
                               onPointerLeave={() => clearTimeout(press.current.timer)}
                               onPointerCancel={() => clearTimeout(press.current.timer)}
                               onContextMenu={(e) => e.preventDefault()}
-                              disabled={c.future}
+                              disabled={c.future || c.paused}
                               aria-label={`${h.name} ${k}`}
                               style={{ width: colW, minWidth: colW, height: ROW_H, touchAction: "pan-x" }}
                               className="relative disabled:cursor-default">
@@ -435,31 +460,6 @@ export default function StreakApp() {
           </div>
         )}
 
-        {active.length > 0 && (
-          <div className="px-4 pt-8 pb-24">
-            <div className="rounded-xl border border-neutral-200 p-4">
-              <div className="text-[11px] tracking-widest text-neutral-400 mb-2">TODAY</div>
-              <div className="flex gap-5 text-sm">
-                <span className="text-neutral-900">残り <b className="tabular-nums">{tally.todo}</b></span>
-                <span className="text-neutral-400">済 <b className="tabular-nums">{tally.done}</b></span>
-                <span className="text-neutral-400">休んでOK <b className="tabular-nums">{tally.rest}</b></span>
-              </div>
-              {tally.todo > 0 ? (
-                due.length ? (
-                  <p className="mt-3 text-[13px] text-neutral-700 leading-relaxed">
-                    必須！: {due.map((h) => h.name).join("、")}
-                  </p>
-                ) : null
-              ) : tally.done === 0 ? (
-                <p className="mt-3 text-[13px] text-neutral-400">今日はすべて休んでいい日。</p>
-              ) : tally.rest === 0 ? (
-                <p className="mt-3 text-[13px] text-green-700 leading-relaxed">パーフェクト！</p>
-              ) : (
-                <p className="mt-3 text-[13px] text-green-700 leading-relaxed">おめでとう！</p>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
       {sheet?.mode === "add" && (
@@ -467,7 +467,7 @@ export default function StreakApp() {
           onSave={(h) => { commit([...habits, { ...h, id: crypto.randomUUID(), days: {} }]); setSheet(null); }} />
       )}
       {sheet?.mode === "detail" && (
-        <Detail habit={habits.find((h) => h.id === sheet.id)} today={today}
+        <Detail habit={habits.find((h) => h.id === sheet.id)} pauses={pauses} today={today}
           onClose={() => setSheet(null)}
           onSave={(p) => { commit(habits.map((h) => (h.id === sheet.id ? { ...h, ...p } : h))); setSheet(null); }}
           onArchive={() => { commit(habits.map((h) => (h.id === sheet.id ? { ...h, archived: true } : h))); setSheet(null); }}
@@ -482,7 +482,7 @@ export default function StreakApp() {
         <Reorder habits={active} onChange={(n) => commit([...n, ...archived])} onClose={() => setSheet(null)} />
       )}
       {sheet?.mode === "data" && (
-        <MenuSheet habits={habits} archived={archived} onReplace={commit}
+        <MenuSheet habits={habits} archived={archived} pauses={pauses} onPausesChange={commitPauses} onReplace={commit}
           onRestore={(id) => commit(habits.map((h) => (h.id === id ? { ...h, archived: false } : h)))}
           onDelete={(id) => commit(habits.filter((h) => h.id !== id))}
           onClose={() => setSheet(null)} />
@@ -531,8 +531,11 @@ function Reorder({ habits, onChange, onClose }) {
 }
 
 /* ---------- データの書き出し・読み込み ---------- */
-function MenuSheet({ habits, archived, onReplace, onRestore, onDelete, onClose }) {
-  const [tab, setTab] = useState(archived.length ? "rest" : "out");
+function MenuSheet({ habits, archived, pauses, onPausesChange, onReplace, onRestore, onDelete, onClose }) {
+  const today = key(new Date());
+  const [tab, setTab] = useState("pause");
+  const [pauseStart, setPauseStart] = useState(today);
+  const [pauseEnd, setPauseEnd] = useState(today);
   const [raw, setRaw] = useState("");
   const [pending, setPending] = useState(null);
   const [msg, setMsg] = useState("");
@@ -592,18 +595,60 @@ function MenuSheet({ habits, archived, onReplace, onRestore, onDelete, onClose }
     r.readAsText(f);
   };
 
+  const addPause = () => {
+    if (!pauseStart || !pauseEnd || pauseStart > pauseEnd) return;
+    const next = [...pauses, { id: crypto.randomUUID(), start: pauseStart, end: pauseEnd }]
+      .sort((a, b) => a.start.localeCompare(b.start));
+    onPausesChange(next);
+  };
+
   return (
     <Sheet onClose={onClose}>
       <div className="text-[11px] tracking-widest text-neutral-400 mb-4">メニュー</div>
-      <div className="flex gap-2">
-        {[["rest", `休止中${archived.length ? ` ${archived.length}` : ""}`], ["out", "書き出し"], ["in", "読み込み"]].map(([v, l]) => (
+      <div className="flex flex-wrap gap-2">
+        {[["pause", `一時休止${pauses.length ? ` ${pauses.length}` : ""}`], ["rest", `習慣の休止${archived.length ? ` ${archived.length}` : ""}`], ["out", "書き出し"], ["in", "読み込み"]].map(([v, l]) => (
           <button key={v} onClick={() => { setTab(v); setMsg(""); }}
             className={"px-3 py-1.5 rounded-full text-sm border " +
               (tab === v ? "bg-neutral-900 text-white border-neutral-900" : "border-neutral-200 text-neutral-600")}>{l}</button>
         ))}
       </div>
 
-      {tab === "rest" ? (
+      {tab === "pause" ? (
+        <div className="mt-5">
+          <p className="text-[13px] text-neutral-500 leading-relaxed">
+            テスト前などの期間を、すべての習慣で一時休止にします。連鎖は続きますが、この期間は実施回数に数えません。
+          </p>
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <label className="text-[11px] text-neutral-400">
+              開始日
+              <input type="date" value={pauseStart} onChange={(e) => setPauseStart(e.target.value)}
+                className="mt-1 block w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-700 outline-none focus:border-neutral-900" />
+            </label>
+            <label className="text-[11px] text-neutral-400">
+              終了日
+              <input type="date" value={pauseEnd} min={pauseStart} onChange={(e) => setPauseEnd(e.target.value)}
+                className="mt-1 block w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm text-neutral-700 outline-none focus:border-neutral-900" />
+            </label>
+          </div>
+          <button onClick={addPause} disabled={!pauseStart || !pauseEnd || pauseStart > pauseEnd}
+            className="mt-4 w-full py-3 rounded-full bg-neutral-900 text-white text-sm disabled:opacity-30">
+            この期間を一時休止にする
+          </button>
+          {pauses.length > 0 && (
+            <ul className="mt-5 border-t border-neutral-100">
+              {pauses.map((p) => (
+                <li key={p.id} className="flex items-center gap-3 py-3 border-b border-neutral-100">
+                  <span className="flex-1 text-sm text-neutral-700 tabular-nums">
+                    {p.start.replaceAll("-", "/")} 〜 {p.end.replaceAll("-", "/")}
+                  </span>
+                  <button onClick={() => onPausesChange(pauses.filter((x) => x.id !== p.id))}
+                    className="text-[13px] text-neutral-400 hover:text-red-500">解除</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : tab === "rest" ? (
         <div className="mt-5">
           {archived.length === 0 ? (
             <p className="text-[13px] text-neutral-400 leading-relaxed">
@@ -716,9 +761,13 @@ function seed(today) {
 
 /* ---------- editor / detail / sheet ---------- */
 function Editor({ initial, onClose, onSave, title = "新しい習慣" }) {
+  const presets = [1, 2, 3, 4, 7];
+  const initialInterval = Math.max(1, Math.min(60, Math.trunc(Number(initial?.interval) || 1)));
   const [name, setName] = useState(initial?.name ?? "");
   const [color, setColor] = useState(initial?.color ?? "green");
-  const [interval, setIv] = useState(initial?.interval ?? 1);
+  const [interval, setIv] = useState(initialInterval);
+  const [custom, setCustom] = useState(!presets.includes(initialInterval));
+  const clampCustom = (value) => Math.max(2, Math.min(60, Math.trunc(Number(value) || 2)));
   return (
     <Sheet onClose={onClose}>
       <div className="text-[11px] tracking-widest text-neutral-400 mb-4">{title}</div>
@@ -726,14 +775,33 @@ function Editor({ initial, onClose, onSave, title = "新しい習慣" }) {
         className="w-full text-lg border-b border-neutral-200 pb-2 outline-none focus:border-neutral-900" />
       <div className="mt-6 text-[11px] tracking-widest text-neutral-400 mb-2">ペース</div>
       <div className="flex flex-wrap gap-2">
-        {[1, 2, 3, 4, 7].map((n) => (
-          <button key={n} onClick={() => setIv(n)}
+        {presets.map((n) => (
+          <button key={n} onClick={() => { setIv(n); setCustom(false); }}
             className={"px-3 py-1.5 rounded-full text-sm border " +
-              (interval === n ? "bg-neutral-900 text-white border-neutral-900" : "border-neutral-200 text-neutral-600")}>
+              (!custom && interval === n ? "bg-neutral-900 text-white border-neutral-900" : "border-neutral-200 text-neutral-600")}>
             {INTERVAL_LABEL(n)}
           </button>
         ))}
+        <button onClick={() => { setCustom(true); setIv((n) => clampCustom(n)); }}
+          className={"px-3 py-1.5 rounded-full text-sm border " +
+            (custom ? "bg-neutral-900 text-white border-neutral-900" : "border-neutral-200 text-neutral-600")}>
+          その他
+        </button>
       </div>
+      {custom && (
+        <div className="mt-3 flex items-center gap-3">
+          <button onClick={() => setIv((n) => Math.max(2, n - 1))} disabled={interval <= 2} aria-label="1日減らす"
+            className="w-9 h-9 rounded-full border border-neutral-200 text-neutral-600 disabled:opacity-30">−</button>
+          <label className="flex items-center gap-2 text-sm text-neutral-600">
+            <input type="number" min="2" max="60" step="1" value={interval}
+              onChange={(e) => setIv(clampCustom(e.target.value))}
+              className="w-16 rounded-lg border border-neutral-200 px-2 py-2 text-center tabular-nums outline-none focus:border-neutral-900" />
+            日に1回
+          </label>
+          <button onClick={() => setIv((n) => Math.min(60, n + 1))} disabled={interval >= 60} aria-label="1日増やす"
+            className="w-9 h-9 rounded-full border border-neutral-200 text-neutral-600 disabled:opacity-30">+</button>
+        </div>
+      )}
       <p className="mt-2 text-[11px] text-neutral-400 leading-relaxed">
         {interval === 1 ? "1日でも空くと連鎖が切れます。" : `前回から${interval}日以内にやれば連鎖は続きます。連日やってもかまいません。`}
       </p>
@@ -751,12 +819,12 @@ function Editor({ initial, onClose, onSave, title = "新しい習慣" }) {
   );
 }
 
-function Detail({ habit, today, onClose, onSave, onArchive, onDelete }) {
+function Detail({ habit, pauses, today, onClose, onSave, onArchive, onDelete }) {
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   if (!habit) return null;
   if (editing) return <Editor initial={habit} title="習慣を編集" onClose={onClose} onSave={onSave} />;
-  const st = stats(habit.days, habit.interval, today);
+  const st = stats(withPauses(habit.days, pauses), habit.interval, today);
   const shades = PALETTE[habit.color] || PALETTE.green;
   const status = st.doneToday ? "今日は完了"
     : !st.alive ? "連鎖は途切れています"
