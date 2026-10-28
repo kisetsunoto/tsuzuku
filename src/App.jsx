@@ -200,16 +200,19 @@ export default function StreakApp() {
   useEffect(() => {
     (async () => {
       try {
-        const [habitData, pauseData] = await Promise.all([
-          storage.get("streaks:habits"),
-          storage.get("streaks:pauses"),
-        ]);
-        if (habitData?.value) setHabits(JSON.parse(habitData.value).map(migrate));
+        const habitData = await storage.get("streaks:habits");
+        if (habitData?.value) {
+          const saved = JSON.parse(habitData.value);
+          if (Array.isArray(saved)) setHabits(saved.map(migrate));
+        }
+      } catch (e) { /* 初回、または壊れた習慣データ */ }
+      try {
+        const pauseData = await storage.get("streaks:pauses");
         if (pauseData?.value) {
           const saved = JSON.parse(pauseData.value);
           if (Array.isArray(saved)) setPauses(saved.filter((p) => p?.id && p?.start && p?.end));
         }
-      } catch (e) { /* 初回 */ }
+      } catch (e) { /* 初回、または壊れた一時休止データ */ }
       setReady(true);
     })();
   }, []);
@@ -303,7 +306,7 @@ export default function StreakApp() {
 
   return (
     <div className="min-h-screen bg-white text-neutral-900 select-none">
-      <div className="mx-auto max-w-md">
+      <div className="mx-auto max-w-md" style={{ paddingTop: "max(12px, env(safe-area-inset-top))" }}>
         {active.length === 0 ? (
           <Empty onMenu={() => setSheet({ mode: "data" })}
             onAdd={() => setSheet({ mode: "add" })} onSeed={() => commit(seed(today))} />
