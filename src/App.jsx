@@ -306,7 +306,7 @@ export default function StreakApp() {
 
   return (
     <div className="min-h-screen bg-white text-neutral-900 select-none">
-      <div className="mx-auto max-w-md" style={{ paddingTop: "max(12px, env(safe-area-inset-top))" }}>
+      <div className="mx-auto max-w-md" style={{ paddingTop: "max(32px, env(safe-area-inset-top))" }}>
         {active.length === 0 ? (
           <Empty onMenu={() => setSheet({ mode: "data" })}
             onAdd={() => setSheet({ mode: "add" })} onSeed={() => commit(seed(today))} />
