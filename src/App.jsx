@@ -17,7 +17,7 @@ const COLOR_KEYS = Object.keys(PALETTE);
 const WD = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
 const NAME_W = 116;
-const ROW_H = 66;
+const ROW_H = 60;
 const STAT_W = 74;
 const VISIBLE = 5;
 const MIN_HISTORY = 60;
@@ -304,29 +304,17 @@ export default function StreakApp() {
   return (
     <div className="min-h-screen bg-white text-neutral-900 select-none">
       <div className="mx-auto max-w-md">
-        <div className="flex items-center justify-between px-4 pt-5 pb-4">
-          <button onClick={() => setSheet({ mode: "data" })} aria-label="データ"
-            className="w-8 h-8 rounded-full hover:bg-neutral-100 text-neutral-400 text-lg leading-none">⋯</button>
-          <div className="grid grid-cols-2 gap-[2px] w-5 h-5">
-            <span className="bg-green-600" /><span className="bg-neutral-900" />
-            <span className="bg-neutral-900" /><span className="bg-green-600" />
-          </div>
-          <button onClick={() => setSheet({ mode: "add" })} aria-label="習慣を追加"
-            className="w-8 h-8 rounded-full hover:bg-neutral-100 text-2xl leading-none">+</button>
-        </div>
-
         {active.length === 0 ? (
-          <Empty onAdd={() => setSheet({ mode: "add" })} onSeed={() => commit(seed(today))} />
+          <Empty onMenu={() => setSheet({ mode: "data" })}
+            onAdd={() => setSheet({ mode: "add" })} onSeed={() => commit(seed(today))} />
         ) : (
           <div ref={scroller} className="overflow-x-auto overscroll-x-contain no-scrollbar">
             <div style={{ width: contentW }}>
               <div className="flex" style={{ height: 56 }}>
                 <div className="sticky left-0 z-20 bg-white flex items-end pb-2 pl-4"
                   style={{ width: NAME_W, minWidth: NAME_W }}>
-                  <button onClick={() => setSheet({ mode: "order" })}
-                    className="text-[11px] tracking-widest text-neutral-400 hover:text-neutral-700">
-                    HABITS <span className="tracking-normal">⇅</span>
-                  </button>
+                  <button onClick={() => setSheet({ mode: "data" })} aria-label="メニュー"
+                    className="w-8 h-8 rounded-full hover:bg-neutral-100 text-neutral-400 text-lg leading-none">⋯</button>
                 </div>
                 {days.map((d) => {
                   const k = key(d);
@@ -483,6 +471,8 @@ export default function StreakApp() {
       )}
       {sheet?.mode === "data" && (
         <MenuSheet habits={habits} archived={archived} pauses={pauses} onPausesChange={commitPauses} onReplace={commit}
+          onAdd={() => setSheet({ mode: "add" })}
+          onOrder={() => setSheet({ mode: "order" })}
           onRestore={(id) => commit(habits.map((h) => (h.id === id ? { ...h, archived: false } : h)))}
           onDelete={(id) => commit(habits.filter((h) => h.id !== id))}
           onClose={() => setSheet(null)} />
@@ -531,7 +521,7 @@ function Reorder({ habits, onChange, onClose }) {
 }
 
 /* ---------- データの書き出し・読み込み ---------- */
-function MenuSheet({ habits, archived, pauses, onPausesChange, onReplace, onRestore, onDelete, onClose }) {
+function MenuSheet({ habits, archived, pauses, onPausesChange, onAdd, onOrder, onReplace, onRestore, onDelete, onClose }) {
   const today = key(new Date());
   const [tab, setTab] = useState("pause");
   const [pauseStart, setPauseStart] = useState(today);
@@ -605,6 +595,12 @@ function MenuSheet({ habits, archived, pauses, onPausesChange, onReplace, onRest
   return (
     <Sheet onClose={onClose}>
       <div className="text-[11px] tracking-widest text-neutral-400 mb-4">メニュー</div>
+      <div className="grid grid-cols-2 gap-3 mb-5">
+        <button onClick={onAdd}
+          className="py-3 rounded-full bg-neutral-900 text-white text-sm">＋ 新しい習慣</button>
+        <button onClick={onOrder} disabled={habits.filter((h) => !h.archived).length < 2}
+          className="py-3 rounded-full border border-neutral-200 text-sm text-neutral-700 disabled:opacity-30">⇅ 並び替え</button>
+      </div>
       <div className="flex flex-wrap gap-2">
         {[["pause", `一時休止${pauses.length ? ` ${pauses.length}` : ""}`], ["rest", `習慣の休止${archived.length ? ` ${archived.length}` : ""}`], ["out", "書き出し"], ["in", "読み込み"]].map(([v, l]) => (
           <button key={v} onClick={() => { setTab(v); setMsg(""); }}
@@ -731,15 +727,21 @@ function NoteSheet({ habit, day, onClose, onSave }) {
 }
 
 /* ---------- empty / seed ---------- */
-function Empty({ onAdd, onSeed }) {
+function Empty({ onMenu, onAdd, onSeed }) {
   return (
-    <div className="px-4 py-24 text-center">
-      <p className="text-neutral-500 text-sm leading-relaxed">習慣がまだありません。</p>
-      <div className="mt-6 flex flex-col items-center gap-3">
-        <button onClick={onAdd} className="px-5 py-2 rounded-full bg-neutral-900 text-white text-sm">習慣を追加</button>
-        <button onClick={onSeed} className="text-xs text-neutral-400 underline">サンプルで試す</button>
+    <>
+      <div className="h-14 flex items-end px-4 pb-2">
+        <button onClick={onMenu} aria-label="メニュー"
+          className="w-8 h-8 rounded-full hover:bg-neutral-100 text-neutral-400 text-lg leading-none">⋯</button>
       </div>
-    </div>
+      <div className="px-4 py-24 text-center">
+        <p className="text-neutral-500 text-sm leading-relaxed">習慣がまだありません。</p>
+        <div className="mt-6 flex flex-col items-center gap-3">
+          <button onClick={onAdd} className="px-5 py-2 rounded-full bg-neutral-900 text-white text-sm">習慣を追加</button>
+          <button onClick={onSeed} className="text-xs text-neutral-400 underline">サンプルで試す</button>
+        </div>
+      </div>
+    </>
   );
 }
 function seed(today) {
